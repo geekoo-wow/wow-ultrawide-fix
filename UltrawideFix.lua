@@ -181,7 +181,8 @@ function addon.BuildSettingsMenu()
             ShowPreview()
         end
     )
-    local widthOptions = Settings.CreateSliderOptions(800, 10000, 10)
+    local physicalWidth, physicalHeight = GetPhysicalScreenSize()
+    local widthOptions = Settings.CreateSliderOptions(800, math.max(800, physicalWidth), 10)
     if MinimalSliderWithSteppersMixin then
         widthOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
     end
@@ -221,7 +222,7 @@ function addon.BuildSettingsMenu()
             ShowPreview()
         end
     )
-    local heightOptions = Settings.CreateSliderOptions(600, 10000, 10)
+    local heightOptions = Settings.CreateSliderOptions(600, math.max(600, physicalHeight), 10)
     if MinimalSliderWithSteppersMixin then
         heightOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
     end
