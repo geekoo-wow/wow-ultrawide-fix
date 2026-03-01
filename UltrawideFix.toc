@@ -1,8 +1,9 @@
 ## Interface: 120001
 ## Title: Ultrawide Fix
-## Notes: Restricts the UIParent frame size on ultrawide monitors and resolution changes
-## Author: YourName
+## Notes: Restricts the UIParent frame size on ultrawide monitors and resolution changes.
+## Author: bmfurtado
 ## SavedVariables: UltrawideFixDB
-## Version: 1.0
+## Version: @project-version@
+## X-Curse-Project-ID: 1474731
 
 UltrawideFix.lua
