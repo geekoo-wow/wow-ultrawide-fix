@@ -1,0 +1,11 @@
+package-as: UltrawideFix
+
+ignore:
+  - .gitignore
+  - README.md
+  - RELEASE_NOTES.md
+  - .pkgmeta
+
+manual-changelog:
+  filename: RELEASE_NOTES.md
+  markup-type: markdown
