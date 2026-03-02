@@ -110,7 +110,7 @@ local function UpdateUIParent()
         local maxLogicalHeight = logicalHeight * (profile.maxHeight / physicalHeight)
         targetLogicalHeight = math.min(logicalHeight, maxLogicalHeight)
     end
-    
+
     UIParent:SetSize(targetLogicalWidth, targetLogicalHeight)
 
     -- Update offsets: UIParent is centered, so the BOTTOMLEFT offset is
@@ -119,6 +119,201 @@ local function UpdateUIParent()
     uiParentOffsetY = (logicalHeight - targetLogicalHeight) / 2
 
     isResizing = false
+
+    -- Refresh EditMode magnetism manager's cached UIParent points whenever
+    -- we resize UIParent, so snap guide lines stay aligned.
+    if EditModeMagnetismManager and EditModeMagnetismManager.UpdateUIParentPoints then
+        EditModeMagnetismManager:UpdateUIParentPoints()
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- EditMode Compatibility Fixes
+-- ---------------------------------------------------------------------------
+-- When UIParent is smaller than the screen and centered, several EditMode
+-- functions break because they assume UIParent's origin matches the screen
+-- origin. We hook the specific functions that do incorrect coordinate math.
+
+local function InstallEditModeHooks()
+    if not EditModeSystemMixin then return end
+
+    -- Fix 1: BreakFrameSnap (nudging with arrow keys, and save-time re-anchoring)
+    --
+    -- The original computes UIParent-relative offsets from screen-space
+    -- positions (GetLeft/GetTop/GetRight), assuming UIParent's edges align
+    -- with the screen edges. When UIParent is centered and smaller, the
+    -- offsets are wrong by the UIParent offset amount.
+    --
+    -- We replace the method to use UIParent:GetLeft/GetTop/GetRight as
+    -- reference points instead of implicitly assuming 0/GetHeight/GetWidth.
+    local OriginalBreakFrameSnap = EditModeSystemMixin.BreakFrameSnap
+    EditModeSystemMixin.BreakFrameSnap = function(self, deltaX, deltaY)
+        if uiParentOffsetX == 0 and uiParentOffsetY == 0 then
+            return OriginalBreakFrameSnap(self, deltaX, deltaY)
+        end
+
+        local top = self:GetTop()
+        if top then
+            local scale = self:GetScale()
+
+            -- Original: offsetY = -((UIParent:GetHeight() - top * scale) / scale)
+            -- This assumes UIParent top = UIParent:GetHeight() in screen coords.
+            -- Fix: use UIParent:GetTop() (the actual screen-space top edge).
+            local uiTop = UIParent:GetTop()
+            local offsetY = -((uiTop - top * scale) / scale)
+
+            local offsetX, anchorPoint
+            if self.alwaysUseTopRightAnchor then
+                -- Original: offsetX = -((UIParent:GetWidth() - self:GetRight() * scale) / scale)
+                -- Fix: use UIParent:GetRight() instead of UIParent:GetWidth()
+                local uiRight = UIParent:GetRight()
+                offsetX = -((uiRight - self:GetRight() * scale) / scale)
+                anchorPoint = "TOPRIGHT"
+            else
+                -- Original: offsetX = self:GetLeft()
+                -- This assumes UIParent left edge is at screen position 0.
+                -- Fix: convert self:GetLeft() to UIParent's coordinate space
+                -- (multiply by scale), subtract UIParent's left edge position
+                -- (also in UIParent's coordinate space), then convert back to
+                -- self's coordinate space (divide by scale) for SetPoint.
+                offsetX = (self:GetLeft() * scale - UIParent:GetLeft()) / scale
+                anchorPoint = "TOPLEFT"
+            end
+
+            if deltaX then
+                offsetX = offsetX + deltaX
+            end
+            if deltaY then
+                offsetY = offsetY + deltaY
+            end
+
+            self:ClearAllPoints()
+            self:SetPoint(anchorPoint, UIParent, anchorPoint, offsetX, offsetY)
+            self:OnSystemPositionChange()
+        end
+    end
+
+    -- Fix 2: FindClosestGridLine grid-snap offsets
+    --
+    -- When snapping to a grid line, FindClosestGridLine returns an offset
+    -- that eventually becomes a SetPoint offset relative to UIParent.
+    -- For TOP and RIGHT snap points, the offset is relative to UIParent's
+    -- top/right edge (gridPos - uiParentTop/Right), which works correctly.
+    -- For CENTER, it's relative to UIParent's center, also correct.
+    -- But for LEFT and BOTTOM snap points, the offset is the raw screen-
+    -- space grid line position. This is used as a SetPoint offset from
+    -- UIParent's LEFT/BOTTOM anchor, which only works when UIParent starts
+    -- at screen origin (0,0). When UIParent is centered and offset, the
+    -- raw screen position is too large, placing the frame too far right/up.
+    --
+    -- Fix: subtract UIParent's left/bottom screen position from LEFT/BOTTOM
+    -- offsets to convert them to UIParent-relative values.
+    if EditModeMagnetismManager then
+        local OriginalFindClosestGridLine = EditModeMagnetismManager.FindClosestGridLine
+        EditModeMagnetismManager.FindClosestGridLine = function(self, systemFrame, verticalLines)
+            local closestDistance, closestPoint, closestRelativePoint, closestOffset =
+                OriginalFindClosestGridLine(self, systemFrame, verticalLines)
+
+            if uiParentOffsetX == 0 and uiParentOffsetY == 0 then
+                return closestDistance, closestPoint, closestRelativePoint, closestOffset
+            end
+
+            -- Only adjust non-zero offsets (0 = edge/center snap, not grid)
+            if closestOffset and closestOffset ~= 0 then
+                -- LEFT and BOTTOM offsets are raw screen positions in the
+                -- original code. TOP/RIGHT/CENTER offsets are already relative
+                -- to UIParent edges/center. Convert LEFT/BOTTOM to UIParent-
+                -- relative by subtracting UIParent's screen-space origin.
+                if closestPoint == "LEFT" then
+                    closestOffset = closestOffset - self.uiParentLeft
+                elseif closestPoint == "BOTTOM" then
+                    closestOffset = closestOffset - self.uiParentBottom
+                end
+            end
+
+            return closestDistance, closestPoint, closestRelativePoint, closestOffset
+        end
+    end
+
+    -- Fix 3: Snap preview guide lines
+    --
+    -- MagnetismPreviewLineMixin:Setup positions lines using offsets from
+    -- UIParent's center anchor. It uses cached screen-space uiParentCenterX/Y,
+    -- but SetStartPoint/SetEndPoint are relative to UIParent. When UIParent
+    -- doesn't fill the screen, lines are misaligned.
+    --
+    -- For UIParent lines we use UIParent-local center (width/2, height/2).
+    -- For non-UIParent frame lines, the original screen-space math is correct.
+    if MagnetismPreviewLineMixin then
+        local OriginalSetup = MagnetismPreviewLineMixin.Setup
+        MagnetismPreviewLineMixin.Setup = function(self, magneticFrameInfo, lineAnchor)
+            if uiParentOffsetX == 0 and uiParentOffsetY == 0 then
+                return OriginalSetup(self, magneticFrameInfo, lineAnchor)
+            end
+
+            local mgr = EditModeMagnetismManager
+            local relativeTo = magneticFrameInfo.frame
+            local isLineAnchoringHorizontally = (lineAnchor == "Top" or lineAnchor == "Bottom"
+                                                 or lineAnchor == "CenterHorizontal")
+
+            local startPoint, endPoint
+            if isLineAnchoringHorizontally then
+                startPoint, endPoint = "LEFT", "RIGHT"
+            else
+                startPoint, endPoint = "TOP", "BOTTOM"
+            end
+
+            local offsetX, offsetY = 0, 0
+
+            if relativeTo == UIParent then
+                -- After Fix 2, all grid line offsets from FindClosestGridLine
+                -- are now UIParent-relative (LEFT/BOTTOM offsets were converted
+                -- from raw screen-space). This means we can use the original
+                -- formula pattern but with UIParent-local center (width/2,
+                -- height/2) instead of screen-space center.
+                --
+                -- The pattern for each anchor:
+                --   LEFT:   line at UIParent left  + offset → from center: offset - width/2
+                --   RIGHT:  line at UIParent right + offset → from center: offset + width/2
+                --   BOTTOM: line at UIParent bottom + offset → from center: offset - height/2
+                --   TOP:    line at UIParent top    + offset → from center: offset + height/2
+                --   CENTER: offset is already relative to center
+                local localCenterX = mgr.uiParentWidth / 2
+                local localCenterY = mgr.uiParentHeight / 2
+
+                if lineAnchor == "CenterHorizontal" then
+                    offsetY = magneticFrameInfo.offset
+                elseif lineAnchor == "CenterVertical" then
+                    offsetX = magneticFrameInfo.offset
+                elseif lineAnchor == "Top" or lineAnchor == "Bottom" then
+                    if lineAnchor == "Top" then
+                        offsetY = magneticFrameInfo.offset + localCenterY
+                    else
+                        offsetY = magneticFrameInfo.offset - localCenterY
+                    end
+                elseif lineAnchor == "Right" or lineAnchor == "Left" then
+                    if lineAnchor == "Right" then
+                        offsetX = magneticFrameInfo.offset + localCenterX
+                    else
+                        offsetX = magneticFrameInfo.offset - localCenterX
+                    end
+                end
+            else
+                -- For non-UIParent frames, the original screen-space math is
+                -- correct: (screenPos - screenCenterOfUIParent) gives the
+                -- right offset from UIParent's center for SetStartPoint.
+                return OriginalSetup(self, magneticFrameInfo, lineAnchor)
+            end
+
+            self:SetStartPoint(startPoint, UIParent, offsetX, offsetY)
+            self:SetEndPoint(endPoint, UIParent, offsetX, offsetY)
+            local linePixelWidth = 1.5
+            local lineThickness = PixelUtil.GetNearestPixelSize(
+                linePixelWidth, self:GetEffectiveScale(), linePixelWidth)
+            self:SetThickness(lineThickness)
+            self:Show()
+        end
+    end
 end
 
 -- Live Preview Logic
@@ -142,7 +337,7 @@ local function ShowPreview()
     local physicalWidth, physicalHeight = GetPhysicalScreenSize()
     local logicalWidth = GetScreenWidth()
     local logicalHeight = GetScreenHeight()
-    
+
     local targetLogicalWidth = logicalWidth
     local targetLogicalHeight = logicalHeight
 
@@ -161,7 +356,7 @@ local function ShowPreview()
     previewFrame:Show()
 
     if previewTimer then
-         previewTimer:Cancel()
+        previewTimer:Cancel()
     end
     previewTimer = C_Timer.NewTimer(3, function()
         previewFrame:Hide()
@@ -261,6 +456,7 @@ end
 frame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
         InitializeSettings()
+        InstallEditModeHooks()
         if addon.BuildSettingsMenu then
             addon.BuildSettingsMenu()
         end
