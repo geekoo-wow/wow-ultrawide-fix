@@ -60,6 +60,26 @@ end
 
 local isResizing = false
 
+-- Store the original GetCursorPosition so we can wrap it
+local OriginalGetCursorPosition = GetCursorPosition
+
+-- Offset tracking: how much UIParent's BOTTOMLEFT is shifted from screen BOTTOMLEFT
+-- These are in logical (scaled) coordinates
+local uiParentOffsetX = 0
+local uiParentOffsetY = 0
+
+-- Replace GetCursorPosition globally so that all Blizzard code (dropdown menus,
+-- context menus, etc.) that converts cursor coords to UIParent-space using
+--   cursorX / UIParent:GetEffectiveScale()
+-- gets the correct result. Without this, menus appear shifted because UIParent
+-- is centered and smaller than the full screen.
+GetCursorPosition = function()
+    local x, y = OriginalGetCursorPosition()
+    local scale = UIParent:GetEffectiveScale()
+    -- Subtract the UIParent offset (converted back to unscaled screen coords)
+    return x - (uiParentOffsetX * scale), y - (uiParentOffsetY * scale)
+end
+
 local function UpdateUIParent()
     if isResizing then return end
     isResizing = true
@@ -92,6 +112,11 @@ local function UpdateUIParent()
     end
     
     UIParent:SetSize(targetLogicalWidth, targetLogicalHeight)
+
+    -- Update offsets: UIParent is centered, so the BOTTOMLEFT offset is
+    -- half the difference between the full screen and the restricted size
+    uiParentOffsetX = (logicalWidth - targetLogicalWidth) / 2
+    uiParentOffsetY = (logicalHeight - targetLogicalHeight) / 2
 
     isResizing = false
 end
