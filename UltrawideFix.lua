@@ -60,6 +60,40 @@ end
 
 local isResizing = false
 
+-- ---------------------------------------------------------------------------
+-- Secure UIParent resizer
+-- ---------------------------------------------------------------------------
+-- Calling UIParent:SetSize() directly from addon Lua taints UIParent's
+-- geometry.  Blizzard's own secure code (e.g. Blizzard_UIWidgets) then
+-- gets "secret number value tainted by 'UltrawideFix'" errors when it tries
+-- to do arithmetic on heights/widths derived from tainted frames.
+--
+-- The fix: use a SecureHandlerAttributeTemplate frame whose _onattributechanged
+-- body runs in the restricted (secure) environment.  The addon only sets
+-- attributes on this frame (which is allowed from non-secure code), and the
+-- secure snippet performs the actual UIParent calls.  Because the calls
+-- originate from a secure handler, WoW does not mark the resulting geometry
+-- as tainted.
+local secureResizer = CreateFrame("Frame", "UltrawideFixSecureResizer", UIParent,
+    "SecureHandlerAttributeTemplate")
+secureResizer:SetFrameRef("uiparent", UIParent)
+secureResizer:SetAttribute("_onattributechanged", [=[
+    if name == "uwf-size" then
+        local w, h = strsplit(",", value)
+        local ui = self:GetFrameRef("uiparent")
+        ui:ClearAllPoints()
+        ui:SetPoint("CENTER")
+        ui:SetWidth(tonumber(w))
+        ui:SetHeight(tonumber(h))
+    end
+]=])
+
+-- Wrapper: reposition and resize UIParent via the secure handler.
+-- Passing both values in one attribute change keeps the reset + resize atomic.
+local function SetUIParentSize(w, h)
+    secureResizer:SetAttribute("uwf-size", string.format("%f,%f", w, h))
+end
+
 -- Store the original GetCursorPosition so we can wrap it
 local OriginalGetCursorPosition = GetCursorPosition
 
@@ -90,12 +124,6 @@ local function UpdateUIParent()
     local logicalWidth = GetScreenWidth()
     local logicalHeight = GetScreenHeight()
 
-    -- Reset UIParent to default before applying restrictions
-    UIParent:ClearAllPoints()
-    UIParent:SetPoint("CENTER")
-    -- In WoW 10.0+ UIParent is often bounded by logical screen size
-    UIParent:SetSize(logicalWidth, logicalHeight)
-
     local profile = GetCurrentProfile()
 
     local targetLogicalWidth = logicalWidth
@@ -111,7 +139,9 @@ local function UpdateUIParent()
         targetLogicalHeight = math.min(logicalHeight, maxLogicalHeight)
     end
 
-    UIParent:SetSize(targetLogicalWidth, targetLogicalHeight)
+    -- Re-center and resize UIParent through the secure handler so that
+    -- the resulting geometry is not tainted by addon code.
+    SetUIParentSize(targetLogicalWidth, targetLogicalHeight)
 
     -- Update offsets: UIParent is centered, so the BOTTOMLEFT offset is
     -- half the difference between the full screen and the restricted size
