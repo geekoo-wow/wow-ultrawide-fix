@@ -1,3 +1,10 @@
+# UltrawideFix 1.4.0-alpha
+## Midnight
+### Fixed
+- Cutscenes and movies now play at full screen width instead of being clipped to the restricted UI width. Covers all three WoW cutscene systems: in-engine cinematics, pre-rendered video movies, and Lua-driven narrative scenes (added in patch 9.2.5).
+- UI elements no longer misplace after exiting vehicles or other override-UI states.
+- Resolved a taint error ("secret number value tainted by 'UltrawideFix'") that caused Blizzard's widget system to fail when processing certain tooltips and UI widgets. UIParent is now resized through a secure handler to avoid spreading taint to frame geometry.
+
 # UltrawideFix 1.3.0
 ## Midnight
 ### Fixed
