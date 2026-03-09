@@ -15,6 +15,11 @@ frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("UI_SCALE_CHANGED")
 frame:RegisterEvent("DISPLAY_SIZE_CHANGED")
+frame:RegisterEvent("CINEMATIC_START")
+frame:RegisterEvent("CINEMATIC_STOP")
+frame:RegisterEvent("PLAY_MOVIE")
+frame:RegisterEvent("CLIENT_SCENE_OPENED")
+frame:RegisterEvent("CLIENT_SCENE_CLOSED")
 
 local function InitializeSettings()
     if not UltrawideFixDB then
@@ -59,6 +64,7 @@ local function SetCurrentProfileValue(settingKey, value)
 end
 
 local isResizing = false
+local isCutscenePlaying = false
 
 -- ---------------------------------------------------------------------------
 -- Secure UIParent resizer
@@ -116,6 +122,10 @@ end
 
 local function UpdateUIParent()
     if isResizing then return end
+    -- Don't resize UIParent while a cutscene is playing; video cutscenes
+    -- (PLAY_MOVIE) are Lua frames anchored to UIParent and will be clipped
+    -- to the restricted size if we shrink it during playback.
+    if isCutscenePlaying then return end
     isResizing = true
 
     local physicalWidth, physicalHeight = GetPhysicalScreenSize()
@@ -155,6 +165,43 @@ local function UpdateUIParent()
     if EditModeMagnetismManager and EditModeMagnetismManager.UpdateUIParentPoints then
         EditModeMagnetismManager:UpdateUIParentPoints()
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- Cutscene / movie full-screen handling
+-- ---------------------------------------------------------------------------
+-- Three distinct cutscene systems exist in WoW, all of which can be affected
+-- by a restricted UIParent:
+--
+--   CINEMATIC_START / CINEMATIC_STOP
+--     In-engine cinematics rendered by the C++ engine.  Technically rendered
+--     at native resolution, but the HUD overlay frames are UIParent children
+--     so we restore UIParent for consistent behavior.
+--
+--   PLAY_MOVIE / CINEMATIC_STOP
+--     Pre-rendered video files played inside a Lua frame anchored to UIParent.
+--     Directly affected: a restricted UIParent shrinks the video frame.
+--
+--   CLIENT_SCENE_OPENED / CLIENT_SCENE_CLOSED  (added patch 9.2.5)
+--     Lua-driven narrative scenes used heavily in Dragonflight and The War
+--     Within.  Also rendered in frames relative to UIParent, so directly
+--     affected by a restricted UIParent.
+--
+-- On any scene/cutscene start: expand UIParent to the full logical screen.
+-- On any scene/cutscene stop:  re-apply the user's restrictions.
+
+local function OnCutsceneStart()
+    isCutscenePlaying = true
+    local logicalWidth = GetScreenWidth()
+    local logicalHeight = GetScreenHeight()
+    SetUIParentSize(logicalWidth, logicalHeight)
+    uiParentOffsetX = 0
+    uiParentOffsetY = 0
+end
+
+local function OnCutsceneStop()
+    isCutscenePlaying = false
+    UpdateUIParent()
 end
 
 -- ---------------------------------------------------------------------------
@@ -554,6 +601,10 @@ frame:SetScript("OnEvent", function(self, event, arg1)
                 addon.UpdateSettingsUI()
             end
         end)
+    elseif event == "CINEMATIC_START" or event == "PLAY_MOVIE" or event == "CLIENT_SCENE_OPENED" then
+        OnCutsceneStart()
+    elseif event == "CINEMATIC_STOP" or event == "CLIENT_SCENE_CLOSED" then
+        OnCutsceneStop()
     end
 end)
 
