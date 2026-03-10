@@ -64,7 +64,8 @@ local function SetCurrentProfileValue(settingKey, value)
 end
 
 local isResizing = false
-local isCutscenePlaying = false
+local isCutscenePlaying = false   -- true only during CINEMATIC_START / PLAY_MOVIE
+local isClientScenePlaying = false -- true during CLIENT_SCENE_OPENED; does NOT block UpdateUIParent
 
 -- ---------------------------------------------------------------------------
 -- Secure UIParent resizer
@@ -211,8 +212,42 @@ local function OnCutsceneStart()
 end
 
 local function OnCutsceneStop()
-    isCutscenePlaying = false
-    UpdateUIParent()
+    -- Defer by one frame (mirrors the PLAYER_ENTERING_WORLD deferral in dae0c51).
+    -- Blizzard schedules its own post-cutscene UI restoration via C_Timer in the
+    -- same event frame; by deferring we keep UIParent full-size until that
+    -- restoration completes, then restrict it, preventing misplaced frames.
+    C_Timer.After(0, function()
+        isCutscenePlaying = false
+        UpdateUIParent()
+    end)
+end
+
+-- CLIENT_SCENE_OPENED/CLOSED are Lua-driven narrative scenes (added 9.2.5, used
+-- heavily in Dragonflight and The War Within). These need UIParent at full-screen
+-- so their frames aren't clipped, but they are NOT treated as "isCutscenePlaying"
+-- because CLIENT_SCENE_OPENED can fire for ambient/persistent zone scenes after
+-- login without a matching CLIENT_SCENE_CLOSED. Keeping them separate ensures
+-- UpdateUIParent() remains callable (from settings, scale changes, etc.) even
+-- when a client scene is active or stuck.
+local function OnClientSceneStart()
+    isClientScenePlaying = true
+    local logicalWidth = GetScreenWidth()
+    local logicalHeight = GetScreenHeight()
+    SetUIParentSize(logicalWidth, logicalHeight)
+    uiParentOffsetX = 0
+    uiParentOffsetY = 0
+end
+
+local function OnClientSceneStop()
+    -- Same one-frame deferral as OnCutsceneStop: keep UIParent full-size until
+    -- Blizzard's deferred post-scene UI restoration has run.
+    C_Timer.After(0, function()
+        isClientScenePlaying = false
+        -- Only restore UIParent if no true cinematic is still in progress.
+        if not isCutscenePlaying then
+            UpdateUIParent()
+        end
+    end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -612,10 +647,14 @@ frame:SetScript("OnEvent", function(self, event, arg1)
                 addon.UpdateSettingsUI()
             end
         end)
-    elseif event == "CINEMATIC_START" or event == "PLAY_MOVIE" or event == "CLIENT_SCENE_OPENED" then
+    elseif event == "CINEMATIC_START" or event == "PLAY_MOVIE" then
         OnCutsceneStart()
-    elseif event == "CINEMATIC_STOP" or event == "CLIENT_SCENE_CLOSED" then
+    elseif event == "CINEMATIC_STOP" then
         OnCutsceneStop()
+    elseif event == "CLIENT_SCENE_OPENED" then
+        OnClientSceneStart()
+    elseif event == "CLIENT_SCENE_CLOSED" then
+        OnClientSceneStop()
     end
 end)
 
