@@ -113,11 +113,22 @@ local uiParentOffsetY = 0
 --   cursorX / UIParent:GetEffectiveScale()
 -- gets the correct result. Without this, menus appear shifted because UIParent
 -- is centered and smaller than the full screen.
+--
+-- IMPORTANT: We derive the UIParent offset from UIParent:GetLeft/Bottom() rather
+-- than from addon variables (uiParentOffsetX/Y). UIParent's geometry was set by
+-- the SecureHandlerAttributeTemplate, so these values are clean/untainted. Using
+-- addon variables here would produce tainted return values, causing downstream
+-- "secret number value tainted by 'UltrawideFix'" errors in Blizzard code that
+-- does arithmetic on frame geometry derived from the cursor position (e.g. tooltip
+-- widget heights in Blizzard_UIWidgetTemplateTextWithState).
 GetCursorPosition = function()
     local x, y = OriginalGetCursorPosition()
     local scale = UIParent:GetEffectiveScale()
-    -- Subtract the UIParent offset (converted back to unscaled screen coords)
-    return x - (uiParentOffsetX * scale), y - (uiParentOffsetY * scale)
+    -- UIParent:GetLeft/Bottom() are untainted (set via secure handler).
+    -- Mathematically equivalent to uiParentOffsetX/Y * scale.
+    local uiLeft   = (UIParent:GetLeft()   or 0) * scale
+    local uiBottom = (UIParent:GetBottom() or 0) * scale
+    return x - uiLeft, y - uiBottom
 end
 
 local function UpdateUIParent()
