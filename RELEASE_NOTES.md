@@ -1,3 +1,9 @@
+# UltrawideFix 1.4.2-alpha
+## Midnight
+### Fixed
+- Action bars that were anchored to other action bars (or transitively to them) no longer end up shifted to the right after exiting a vehicle or quest vehicle state. The root cause was that WoW's EditMode `BreakFrameSnap` function, called when action bars are hidden on vehicle entry, computes UIParent-relative `SetPoint` offsets using raw screen-space coordinates — which are wrong when UIParent is centered and smaller than the screen. The existing mixin-level fix was not reaching action bar frames because they are created before `ADDON_LOADED` fires and already hold their own copy of the original function. The fix now also patches each live EditMode frame instance directly.
+- Added a defensive `UIParent:OnSizeChanged` hook that re-applies the configured width/height restriction whenever an external system resets UIParent's geometry, covering vehicle and quest-phase transitions that do not fire a recognisable event.
+
 # UltrawideFix 1.4.1-alpha
 ## Midnight
 ### Fixed

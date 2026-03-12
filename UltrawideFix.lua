@@ -97,7 +97,13 @@ secureResizer:SetAttribute("_onattributechanged", [=[
 
 -- Wrapper: reposition and resize UIParent via the secure handler.
 -- Passing both values in one attribute change keeps the reset + resize atomic.
+-- We track the last size we requested so the OnSizeChanged guard (below) can
+-- distinguish our own resizes from external ones (e.g. Blizzard vehicle code).
+local intendedWidth, intendedHeight
+
 local function SetUIParentSize(w, h)
+    intendedWidth  = w
+    intendedHeight = h
     secureResizer:SetAttribute("uwf-size", string.format("%f,%f", w, h))
 end
 
@@ -251,6 +257,45 @@ local function OnClientSceneStop()
 end
 
 -- ---------------------------------------------------------------------------
+-- External UIParent resize detection
+-- ---------------------------------------------------------------------------
+-- Some Blizzard systems (vehicle/override bar transitions, certain quest
+-- phases) reset UIParent's geometry without firing a recognisable event.
+-- Rather than chasing every possible event, we hook UIParent:OnSizeChanged
+-- and re-apply our restriction whenever something changes UIParent to a size
+-- we didn't set.
+--
+-- The isResizing guard ensures we ignore OnSizeChanged callbacks that result
+-- from our own SetUIParentSize calls (the secure handler runs synchronously
+-- inside SetAttribute, so isResizing is still true when OnSizeChanged fires).
+local externalResizeTimer = nil
+
+UIParent:HookScript("OnSizeChanged", function(self, width, height)
+    -- Ignore our own resizes and cutscene full-screen expansions.
+    if isResizing or isCutscenePlaying or isClientScenePlaying then return end
+    -- Ignore if we haven't set a size yet (pre-login).
+    if not intendedWidth then return end
+
+    -- Check whether the new size differs from what we last set.
+    -- Use a small epsilon to avoid floating-point noise.
+    if math.abs(width - intendedWidth) < 0.5 and math.abs(height - intendedHeight) < 0.5 then
+        return
+    end
+
+    -- Something external changed UIParent's size.  Defer re-application by
+    -- one frame so the external code finishes its work first.  Cancel any
+    -- already-pending timer to avoid redundant calls when SetWidth and
+    -- SetHeight fire OnSizeChanged separately.
+    if externalResizeTimer then
+        externalResizeTimer:Cancel()
+    end
+    externalResizeTimer = C_Timer.NewTimer(0, function()
+        externalResizeTimer = nil
+        UpdateUIParent()
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- WorldMap Zoom/Pan Fix
 -- ---------------------------------------------------------------------------
 -- MapCanvasScrollControllerMixin:GetCursorPosition() calls the global
@@ -357,6 +402,35 @@ local function InstallEditModeHooks()
             self:SetPoint(anchorPoint, UIParent, anchorPoint, offsetX, offsetY)
             self:OnSystemPositionChange()
         end
+    end
+
+    -- The mixin replacement above only affects frames created after this hook
+    -- runs. Action bar frames are created before ADDON_LOADED fires — they
+    -- already have their own copy of the original BreakFrameSnap from Mixin()
+    -- at creation time. We must also patch each live EditMode frame instance.
+    --
+    -- Use the manager's registered frame list when available, and supplement
+    -- with known bar names for robustness.
+    local correctedBreakFrameSnap = EditModeSystemMixin.BreakFrameSnap
+    local function PatchBreakFrameSnapInstance(f)
+        -- Only replace if the instance has its own copy (not already patched).
+        if f and rawget(f, "BreakFrameSnap") == OriginalBreakFrameSnap then
+            f.BreakFrameSnap = correctedBreakFrameSnap
+        end
+    end
+
+    if EditModeManagerFrame and EditModeManagerFrame.registeredSystemFrames then
+        for _, f in ipairs(EditModeManagerFrame.registeredSystemFrames) do
+            PatchBreakFrameSnapInstance(f)
+        end
+    end
+    for _, name in ipairs({
+        "MainMenuBar", "MultiBarBottomLeft", "MultiBarBottomRight",
+        "MultiBarLeft", "MultiBarRight",
+        "ActionBar1", "ActionBar2", "ActionBar3", "ActionBar4",
+        "ActionBar5", "ActionBar6", "ActionBar7", "ActionBar8",
+    }) do
+        PatchBreakFrameSnapInstance(_G[name])
     end
 
     -- Fix 2: FindClosestGridLine grid-snap offsets
