@@ -1,3 +1,8 @@
+# UltrawideFix 1.4.4-alpha
+## Midnight
+### Fixed
+- Fixed a taint error ("attempt to perform arithmetic on local 'textHeight' — a secret number value tainted by 'UltrawideFix'") that occurred when hovering over area Points of Interest on the world map. The global GetCursorPosition replacement taints that entry in _G, causing secure widget code to fail when doing arithmetic on frame measurements derived from tainted values. The TextWithState widget Setup is now wrapped so that insecure addon code is on the call stack, preventing the taint error.
+
 # UltrawideFix 1.4.3-alpha
 ## Midnight
 ### Added
